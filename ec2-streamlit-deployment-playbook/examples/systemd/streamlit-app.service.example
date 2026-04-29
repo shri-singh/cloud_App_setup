@@ -1,0 +1,59 @@
+# =============================================================================
+# systemd Service Unit File for Streamlit
+# File: /etc/systemd/system/streamlit-app.service
+#
+# Copy this file to /etc/systemd/system/streamlit-app.service on your EC2 instance.
+# Replace all YOUR_REPO_NAME and app.py with your actual values.
+#
+# After placing the file:
+#   sudo systemctl daemon-reload
+#   sudo systemctl start streamlit-app
+#   sudo systemctl enable streamlit-app
+#   sudo systemctl status streamlit-app
+# =============================================================================
+
+[Unit]
+# Human-readable service description
+Description=Streamlit App
+
+# Wait for network to be available before starting
+After=network.target
+
+[Service]
+# User to run the service as.
+# For production with stricter security, change to a dedicated non-root user:
+#   useradd -r -s /bin/false streamlituser
+#   chown -R streamlituser:streamlituser /opt/apps/YOUR_REPO_NAME
+#   Then set User=streamlituser below
+User=root
+
+# Directory where the app runs — must contain app.py and .env
+WorkingDirectory=/opt/apps/YOUR_REPO_NAME
+
+# PATH must include the venv's bin directory so the correct Python and pip are used
+Environment="PATH=/opt/apps/YOUR_REPO_NAME/venv/bin:/usr/local/bin:/usr/bin:/bin"
+
+# Load environment variables from the .env file
+# Syntax: KEY=VALUE (no quotes, no export prefix)
+EnvironmentFile=/opt/apps/YOUR_REPO_NAME/.env
+
+# The command that starts Streamlit
+# Uses the venv's streamlit binary directly — no need to activate the venv
+ExecStart=/opt/apps/YOUR_REPO_NAME/venv/bin/streamlit run app.py \
+    --server.port 8501 \
+    --server.address 127.0.0.1 \
+    --server.headless true
+
+# Restart the service automatically if it exits unexpectedly
+Restart=always
+
+# Wait 5 seconds before restarting — prevents rapid crash loop
+RestartSec=5
+
+# Send stdout and stderr to the system journal (view with journalctl)
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+# Start this service when the system reaches normal multi-user mode (standard for server apps)
+WantedBy=multi-user.target
