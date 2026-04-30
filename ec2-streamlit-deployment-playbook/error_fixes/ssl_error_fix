@@ -1,0 +1,35 @@
+Your screenshot shows the real problem.
+This line is wrong in config.log:
+ac_cv_env_LDFLAGS_value='-L/opt/openssl-1.1.1w/lib -Wl,-rpath,/opt/openssl-1.1.1w/libLD_LIBRARY_PATH=/opt/openssl-1.1.1w/lib'
+Notice this bad part:
+libLD_LIBRARY_PATH=/opt/openssl-1.1.1w/lib
+That means your LDFLAGS and LD_LIBRARY_PATH got accidentally joined together because of a missing space or broken line continuation.
+So the compiler failed because the linker flags are malformed.
+
+Fix: clear bad variables and rerun configure cleanly
+Copy-paste this exactly:
+cd /usr/src/Python-3.11.9make cleanunset CPPFLAGSunset LDFLAGSunset LD_LIBRARY_PATHunset CFLAGSunset CCexport CPPFLAGS="-I/opt/openssl-1.1.1w/include"export LDFLAGS="-L/opt/openssl-1.1.1w/lib -Wl,-rpath,/opt/openssl-1.1.1w/lib"export LD_LIBRARY_PATH="/opt/openssl-1.1.1w/lib"./configure \  --enable-optimizations \  --with-ensurepip=install \  --with-openssl=/opt/openssl-1.1.1w \  --with-openssl-rpath=auto
+If this completes without error, then continue:
+make -j$(nproc)make altinstall
+Then verify:
+/usr/local/bin/python3.11 --version/usr/local/bin/python3.11 -c "import ssl; print(ssl.OPENSSL_VERSION)"
+Expected:
+Python 3.11.9OpenSSL 1.1.1w
+
+Before rerunning, test gcc quickly
+Also run this to confirm compiler is fine:
+cd /tmpcat > test.c << 'EOF'#include <stdio.h>int main() {    printf("gcc works\n");    return 0;}EOFgcc test.c -o test./test
+Expected:
+gcc works
+If this works, your compiler is okay and the earlier failure was mainly due to the malformed LDFLAGS.
+
+Then recreate your Streamlit venv
+After Python 3.11 SSL works:
+cd /opt/apps/obsi-pocdeactivate 2>/dev/null || truerm -rf venv/usr/local/bin/python3.11 -m venv venvsource venv/bin/activatepython --versionpython -c "import ssl; print(ssl.OPENSSL_VERSION)"pip --versionpip install --upgrade pip==24.0 setuptools wheelpip install -r requirements.txt
+
+Important syntax lesson
+This is good:
+export LDFLAGS="-L/opt/openssl-1.1.1w/lib -Wl,-rpath,/opt/openssl-1.1.1w/lib"export LD_LIBRARY_PATH="/opt/openssl-1.1.1w/lib"
+This is bad because it accidentally joins both values:
+LDFLAGS="-L/opt/openssl-1.1.1w/lib -Wl,-rpath,/opt/openssl-1.1.1w/lib"LD_LIBRARY_PATH="/opt/openssl-1.1.1w/lib"
+There must be a space, newline, or separate export command between them.
