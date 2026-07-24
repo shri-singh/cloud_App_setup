@@ -1,0 +1,741 @@
+Part 3: Create a simple dummy Nginx page on port 3700
+Step 3.1: Create the test page
+
+Run this entire command on EC2:
+
+sudo tee /usr/share/nginx/html/index.html > /dev/null <<'EOF'
+<!DOCTYPE html>
+<html>
+<head>
+    <title>EC2 Nginx Connectivity Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            text-align: center;
+            margin-top: 100px;
+        }
+        h1 {
+            color: green;
+        }
+    </style>
+</head>
+<body>
+    <h1>EC2 Nginx connectivity is working!</h1>
+    <p>This page is being served from the AWS EC2 instance.</p>
+    <p>Port: 3700</p>
+</body>
+</html>
+EOF
+
+Step 3.2: Configure Nginx to listen on port 3700
+sudo tee /etc/nginx/conf.d/react-test.conf > /dev/null <<'EOF'
+server {
+    listen 3700;
+    listen [::]:3700;
+
+    server_name _;
+
+    root /usr/share/nginx/html;
+    index index.html;
+
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}
+EOF
+Step 3.3: Validate and reload Nginx
+sudo nginx -t
+
+If successful:
+
+sudo systemctl reload nginx
+
+Now verify the port:
+
+sudo ss -lntp | grep 3700
+
+Expected result:
+
+LISTEN 0 511 0.0.0.0:3700
+
+The important part is:
+
+0.0.0.0:3700
+
+If it shows only 127.0.0.1:3700, external systems will not be able to connect.
+
+Step 3.4: Test locally inside EC2
+curl -v http://127.0.0.1:3700/
+
+Also test through the EC2 private IP:
+
+curl -v http://10.20.30.40:3700/
+
+Replace 10.20.30.40.
+
+Both commands should return the HTML page.
+
+Part 4: Check the EC2 operating-system firewall
+
+Check whether firewalld is running:
+
+sudo systemctl is-active firewalld
+
+If the result is:
+
+inactive
+
+you do not need to make a firewalld change.
+
+If the result is:
+
+active
+
+allow ports 3700 and 443:
+
+sudo firewall-cmd --permanent --add-port=3700/tcp
+sudo firewall-cmd --permanent --add-port=443/tcp
+sudo firewall-cmd --reload
+
+Confirm:
+
+sudo firewall-cmd --list-ports
+
+You should see:
+
+3700/tcp 443/tcp
+
+For a hardened corporate image, also inspect nftables:
+
+sudo nft list ruleset
+
+Look for rules that reject or drop TCP port 3700 or 443.
+
+Part 5: Validate the AWS-side network configuration
+Step 5.1: Security Group
+
+Open:
+
+EC2 Console → Instances → Select instance → Security → Security groups
+
+The security group should have inbound rules similar to:
+
+Custom TCP   TCP   3700   CORPORATE_VDI_CIDR
+HTTPS        TCP   443    CORPORATE_VDI_CIDR
+
+Example:
+
+Custom TCP   TCP   3700   10.100.0.0/16
+HTTPS        TCP   443    10.100.0.0/16
+
+Do not use 0.0.0.0/0 unless specifically approved. AWS recommends restricting inbound access to the required source ranges.
+
+The source must be the address range AWS actually sees. It may not be the exact IP shown by ipconfig if corporate traffic passes through NAT or centralized networking.
+
+Step 5.2: Route table
+
+Open:
+
+VPC Console → Subnets → Select EC2 subnet → Route table
+
+There must be a route back to the corporate VDI network.
+
+Example:
+
+Destination       Target
+10.100.0.0/16     tgw-xxxxxxxxxxxxxxxxx
+
+The target might instead be:
+
+Transit Gateway
+Virtual Private Gateway
+Network appliance
+VPC peering connection
+
+The EC2 must have a return route to the corporate VDI CIDR.
+
+Step 5.3: Network ACL
+
+Open:
+
+VPC Console → Subnets → Select subnet → Network ACL
+
+For a custom restrictive NACL, check:
+
+Inbound
+TCP 3700 from CORPORATE_VDI_CIDR → ALLOW
+TCP 443  from CORPORATE_VDI_CIDR → ALLOW
+Outbound
+TCP 1024-65535 to CORPORATE_VDI_CIDR → ALLOW
+
+The outbound ephemeral-port rule matters because NACLs are stateless and must explicitly permit response traffic.
+
+If your NACL allows all inbound and outbound traffic, no change is required.
+
+Part 6: Test directly from the Windows corporate VDI
+
+Open PowerShell on the Windows VDI.
+
+Step 6.1: Test whether the TCP port can be reached
+Test-NetConnection 10.20.30.40 -Port 3700 -InformationLevel Detailed
+
+Replace the private IP.
+
+Look for:
+
+TcpTestSucceeded : True
+Interpretation
+
+If you see:
+
+TcpTestSucceeded : False
+
+the request is being blocked before it reaches Nginx. Check:
+
+FER/firewall
+Corporate routing
+Transit Gateway or VPN route
+AWS route table
+NACL
+Security group
+Linux firewall
+
+If you see:
+
+TcpTestSucceeded : True
+
+the TCP network path is open.
+
+Step 6.2: Request the actual web page
+
+Use curl.exe, not PowerShell’s alias behavior:
+
+curl.exe --noproxy "*" -v http://10.20.30.40:3700/
+
+The --noproxy "*" option prevents a corporate web proxy from intercepting the private-IP request.
+
+Then open this in Chrome or Edge:
+
+http://10.20.30.40:3700
+
+Do not use https:// for this test because port 3700 is currently configured as plain HTTP.
+
+Part 7: Watch the request arrive at EC2
+
+On EC2, run:
+
+sudo tail -f /var/log/nginx/access.log /var/log/nginx/error.log
+
+Leave it running and repeat from Windows:
+
+curl.exe --noproxy "*" -v http://10.20.30.40:3700/
+Interpret the result
+No access-log entry appears
+
+The request never reached Nginx.
+
+Investigate:
+
+FER → corporate route → Transit Gateway/VPN → route table → NACL → security group
+An access-log entry appears with HTTP 200
+
+The network and Nginx are working.
+
+An access-log entry appears with HTTP 404
+
+The request reached Nginx, but the root path or files are incorrect.
+
+An access-log entry appears with HTTP 403
+
+Check file ownership, permissions or SELinux.
+
+An access-log entry appears with HTTP 500 or 502
+
+Nginx reached the request but the application or upstream configuration failed.
+
+Part 8: Use tcpdump to determine whether packets reach EC2
+
+If the direct VDI test fails, run this on EC2:
+
+sudo dnf install -y tcpdump
+
+Then:
+
+sudo tcpdump -ni any tcp port 3700
+
+Repeat from Windows:
+
+Test-NetConnection 10.20.30.40 -Port 3700
+Interpretation
+No packets appear in tcpdump
+
+The request is blocked before reaching the EC2 network interface.
+
+Most likely:
+
+FER
+Corporate routing
+Transit Gateway routing
+NACL
+Security group
+SYN packets appear, but no connection completes
+
+The request reached EC2 but the operating system is not responding correctly.
+
+Check:
+
+sudo ss -lntp | grep 3700
+sudo systemctl status nginx --no-pager
+sudo nft list ruleset
+Part 9: Use SSM port forwarding as a control test
+
+This test bypasses the direct FER-to-private-IP application path. It proves whether Nginx itself works.
+
+AWS Session Manager can forward a local Windows port to a port on the managed EC2 instance.
+
+On Windows PowerShell:
+
+aws sso login --profile CORP-PROFILE
+
+Start port forwarding:
+
+aws ssm start-session --target i-0123456789abcdef0 --document-name AWS-StartPortForwardingSession --parameters portNumber="3700",localPortNumber="13700" --region us-east-1 --profile CORP-PROFILE
+
+Leave that PowerShell window open.
+
+Open another PowerShell window and run:
+
+curl.exe -v http://localhost:13700/
+
+Or open:
+
+http://localhost:13700
+Interpretation
+SSM test works, but private-IP test fails
+
+Nginx and the EC2 operating system are working.
+
+The problem is definitely in the direct network path:
+
+FER / routing / Transit Gateway / NACL / security group
+SSM test also fails
+
+Check:
+
+Nginx port 3700
+SSM Agent
+Instance IAM role
+Session Manager plugin
+Local AWS credentials
+Part 10: Optional HTTPS test on port 443
+
+Opening port 443 in a firewall does not automatically make the application HTTPS. Nginx must have:
+
+An SSL certificate
+A private key
+listen 443 ssl
+
+For a temporary technical test, create a self-signed certificate. For production, use a corporate-issued certificate or an Application Load Balancer with an ACM certificate.
+
+Step 10.1: Check whether 443 is already configured
+sudo grep -R "listen.*443" /etc/nginx
+
+If a valid 443 configuration already exists, do not create a duplicate configuration.
+
+Step 10.2: Create a temporary certificate
+sudo mkdir -p /etc/nginx/certs
+
+Replace 10.20.30.40:
+
+sudo openssl req -x509 -nodes -newkey rsa:2048 -days 30 \
+-keyout /etc/nginx/certs/nginx-test.key \
+-out /etc/nginx/certs/nginx-test.crt \
+-subj "/CN=10.20.30.40" \
+-addext "subjectAltName=IP:10.20.30.40"
+Step 10.3: Configure Nginx for HTTPS
+sudo tee /etc/nginx/conf.d/react-443.conf > /dev/null <<'EOF'
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+
+    server_name _;
+
+    ssl_certificate /etc/nginx/certs/nginx-test.crt;
+    ssl_certificate_key /etc/nginx/certs/nginx-test.key;
+
+    root /usr/share/nginx/html;
+    index index.html;
+
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}
+EOF
+
+Validate and reload:
+
+sudo nginx -t
+sudo systemctl reload nginx
+
+Verify:
+
+sudo ss -lntp | grep 443
+
+From Windows:
+
+Test-NetConnection 10.20.30.40 -Port 443
+curl.exe --noproxy "*" -vk https://10.20.30.40/
+
+The -k is acceptable only for this temporary self-signed test. A browser will display a certificate warning.
+
+Part 11: Install Git and Node.js on EC2
+
+You do not install GitHub Desktop on the EC2 server. You install:
+
+git for repository operations
+Node.js and npm to build the React application
+
+Amazon Linux 2023 uses dnf, and its repositories provide Git, Nginx and Node.js packages.
+
+Run:
+
+sudo dnf install -y git nodejs20
+
+Check:
+
+git --version
+node --version
+npm --version
+
+If nodejs20 is not available in your corporate pinned repository:
+
+sudo dnf install -y git nodejs npm
+Part 12: Verify EC2 can reach GitHub
+
+Run:
+
+curl -I https://github.com
+
+Then test Git:
+
+git ls-remote https://github.com/OWNER/REPOSITORY.git
+
+For a public repository, this should return branch and commit information.
+
+For a private repository, GitHub will require authentication.
+
+If curl cannot reach GitHub, the EC2 subnet needs one of these:
+
+NAT Gateway
+Corporate proxy
+Centralized firewall outbound rule
+Approved GitHub allowlist
+
+If you receive a certificate-authority error because your company performs TLS inspection, install the corporate root CA on EC2. Do not solve it by disabling Git SSL validation.
+
+Part 13: Clone the GitHub repository
+
+Create an application directory:
+
+mkdir -p /home/ec2-user/apps
+cd /home/ec2-user/apps
+
+Clone:
+
+git clone https://github.com/OWNER/REPOSITORY.git react-app
+
+GitHub’s documented HTTPS process is to enter your GitHub username and use a personal access token instead of an account password. Do not put the token directly in the clone URL because it can remain in shell history.
+
+For a private repository, enter:
+
+Username: YOUR_GITHUB_USERNAME
+Password: YOUR_PERSONAL_ACCESS_TOKEN
+
+If the repository belongs to a corporate GitHub organization using SAML SSO, the token may also need to be authorized for that organization.
+
+Confirm the repository:
+
+cd /home/ec2-user/apps/react-app
+git status
+git remote -v
+Part 14: Build and deploy the React application
+
+From the repository:
+
+cd /home/ec2-user/apps/react-app
+
+If the repository contains package-lock.json, run:
+
+npm ci
+
+If it does not contain package-lock.json, run:
+
+npm install
+
+Build:
+
+npm run build
+
+Check the generated folder:
+
+ls -la
+
+Typical build folders are:
+
+dist for Vite
+build for Create React App
+For a Vite React application
+sudo rm -rf /usr/share/nginx/html/*
+sudo cp -r dist/. /usr/share/nginx/html/
+For Create React App
+sudo rm -rf /usr/share/nginx/html/*
+sudo cp -r build/. /usr/share/nginx/html/
+
+Reload Nginx:
+
+sudo nginx -t
+sudo systemctl reload nginx
+
+Test from EC2:
+
+curl -I http://127.0.0.1:3700/
+
+Test from Windows:
+
+curl.exe --noproxy "*" -v http://10.20.30.40:3700/
+
+Then open:
+
+http://10.20.30.40:3700
+
+Your try_files ... /index.html Nginx configuration supports React client-side routes such as /dashboard and /settings.
+
+Part 15: Prepare EC2 for VS Code Remote SSH through SSM
+
+Because your FER currently covers 443 and 3700—not port 22—the recommended solution is:
+
+VS Code Remote SSH
+        ↓
+Local Windows OpenSSH
+        ↓
+AWS Systems Manager tunnel over HTTPS
+        ↓
+SSHD on EC2
+
+AWS supports SSH through Session Manager without opening an inbound SSH port or maintaining a bastion host. SSHD must still run inside EC2, but security-group port 22 can remain closed.
+
+Step 15.1: Verify SSM Agent on EC2
+sudo systemctl status amazon-ssm-agent --no-pager
+
+If needed:
+
+sudo systemctl enable --now amazon-ssm-agent
+Step 15.2: Verify SSHD on EC2
+sudo systemctl status sshd --no-pager
+
+If needed:
+
+sudo systemctl enable --now sshd
+
+You do not need an EC2 security-group inbound rule for port 22 when connecting through SSM.
+
+Step 15.3: Verify the instance IAM role
+
+The EC2 instance needs an IAM instance profile with permissions equivalent to:
+
+AmazonSSMManagedInstanceCore
+
+From Windows, verify that AWS recognizes it as a managed instance:
+
+aws ssm describe-instance-information --filters Key=InstanceIds,Values=i-0123456789abcdef0 --region us-east-1 --profile CORP-PROFILE
+
+If the response contains the instance and shows it online, SSM is ready.
+
+Part 16: Create an SSH key for VS Code
+
+If you already have the original EC2 PEM key, you may use it.
+
+A cleaner alternative is to create a dedicated VS Code key.
+
+Step 16.1: Generate the key on Windows
+
+Open PowerShell:
+
+ssh-keygen -t ed25519 -f "$env:USERPROFILE\.ssh\react-ec2" -C "react-ec2-vscode"
+
+Press Enter when prompted for a passphrase, or enter a passphrase if required by corporate policy.
+
+Display the public key:
+
+Get-Content "$env:USERPROFILE\.ssh\react-ec2.pub"
+
+Copy the entire output. It begins with:
+
+ssh-ed25519
+Step 16.2: Add the public key to EC2
+
+Connect to EC2 using your existing SSM shell.
+
+Run:
+
+mkdir -p /home/ec2-user/.ssh
+chmod 700 /home/ec2-user/.ssh
+
+Append the key:
+
+echo 'PASTE_THE_COMPLETE_SSH_PUBLIC_KEY_HERE' >> /home/ec2-user/.ssh/authorized_keys
+
+Then:
+
+chmod 600 /home/ec2-user/.ssh/authorized_keys
+sudo chown -R ec2-user:ec2-user /home/ec2-user/.ssh
+Part 17: Check Windows prerequisites
+
+In Windows PowerShell:
+
+aws --version
+session-manager-plugin
+ssh -V
+
+All three must work.
+
+Then authenticate:
+
+aws sso login --profile CORP-PROFILE
+
+Test a normal SSM session:
+
+aws ssm start-session --target i-0123456789abcdef0 --region us-east-1 --profile CORP-PROFILE
+
+Exit the session after confirming that it works:
+
+exit
+Part 18: Configure SSH over SSM on Windows
+
+Open the SSH configuration file:
+
+notepad "$env:USERPROFILE\.ssh\config"
+
+Paste this:
+
+Host react-ec2
+    HostName i-0123456789abcdef0
+    User ec2-user
+    IdentityFile C:/Users/YOUR_WINDOWS_USERNAME/.ssh/react-ec2
+    IdentitiesOnly yes
+    ProxyCommand C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe "aws ssm start-session --target %h --document-name AWS-StartSSHSession --parameters portNumber=%p --region us-east-1 --profile CORP-PROFILE"
+
+Replace:
+
+Instance ID
+Windows username
+Region
+AWS profile
+
+AWS documents this Windows ProxyCommand approach for tunneling SSH through Session Manager.
+
+Test from PowerShell:
+
+aws sso login --profile CORP-PROFILE
+ssh react-ec2
+
+For detailed troubleshooting:
+
+ssh -vvv react-ec2
+
+A successful connection should produce an EC2 terminal prompt similar to:
+
+[ec2-user@ip-10-20-30-40 ~]$
+Part 19: Connect from VS Code
+
+Install these extensions in your Windows VS Code:
+
+Remote - SSH
+AWS Toolkit
+
+The essential one is Remote - SSH. VS Code uses the SSH connection to install a small VS Code Server component on EC2 and then runs terminals, Git and language extensions against the remote files.
+
+Then:
+
+Run the AWS login first:
+aws sso login --profile CORP-PROFILE
+Open VS Code.
+Press:
+Ctrl + Shift + P
+Select:
+Remote-SSH: Connect to Host
+Select:
+react-ec2
+Select Linux if prompted.
+After connection, choose:
+File → Open Folder
+Open:
+/home/ec2-user/apps/react-app
+
+At this point:
+
+VS Code runs on your Windows VDI
+Files stay on EC2
+Git commands run on EC2
+Node and npm run on EC2
+You do not need to copy the repository to the VDI
+Part 20: If VS Code Remote SSH hangs
+
+VS Code’s remote component normally needs outbound HTTPS access from EC2 to download VS Code Server and extensions.
+
+Test from EC2:
+
+curl -I https://update.code.visualstudio.com
+curl -I https://marketplace.visualstudio.com
+
+If these fail, the EC2 needs an approved outbound proxy or firewall allowlisting.
+
+In VS Code, open Settings JSON and add:
+
+{
+    "remote.SSH.showLoginTerminal": true,
+    "remote.SSH.useLocalServer": false
+}
+
+If the Remote SSH log says:
+
+open failed: administratively prohibited
+
+enable SSH TCP forwarding on EC2:
+
+sudo tee /etc/ssh/sshd_config.d/99-vscode.conf > /dev/null <<'EOF'
+AllowTcpForwarding yes
+EOF
+
+Validate:
+
+sudo sshd -t
+
+Restart:
+
+sudo systemctl restart sshd
+
+VS Code specifically uses SSH forwarding, and its troubleshooting guidance identifies AllowTcpForwarding as the remedy for this error.
+
+Fast diagnostic summary
+Test	Result	Meaning
+curl http://127.0.0.1:3700 on EC2 fails	Nginx problem	Fix listener/configuration
+Local curl works, SSM forwarding fails	SSM problem	Check agent, IAM and plugin
+SSM forwarding works, direct VDI fails	Network problem	Check FER, route, NACL and SG
+Test-NetConnection is false	TCP blocked	Network/security layer
+Test-NetConnection is true but curl fails	Protocol/proxy/TLS issue	Check HTTP vs HTTPS and proxy
+No Nginx access-log entry	Request did not reach Nginx	Network path
+Access log shows 404/403/500	Request reached Nginx	Application/configuration issue
+ssh react-ec2 works but VS Code fails	VS Code Server issue	Outbound access or forwarding
+GitHub curl fails from EC2	Outbound connectivity issue	NAT, proxy, DNS or firewall
+
+The most useful order is:
+
+1. EC2 curl localhost:3700
+2. EC2 curl private-IP:3700
+3. SSM port-forward test
+4. Windows Test-NetConnection
+5. Windows curl to private IP
+6. Watch Nginx logs and tcpdump
+7. Clone and build React
+8. Configure VS Code Remote SSH through SSM
