@@ -1,0 +1,928 @@
+Amazon Linux 2023 EC2
+React/TypeScript frontend
+Python/FastAPI backend
+Redis running on the EC2 host
+PostgreSQL/Aurora accessible from EC2
+GitHub repository already cloned
+VS Code Remote SSH working
+Existing Dockerfiles and possibly compose.yaml or docker-compose.yml
+Recommended order
+
+Use this sequence:
+
+Inspect the repository and determine versions.
+Install Docker and Docker Compose.
+Install NVM and the project’s exact Node.js version.
+Create the Python virtual environment.
+Install requirements.txt.
+Create backend and frontend environment files.
+Test Redis and PostgreSQL independently.
+Run backend natively first.
+Run React natively first.
+Run the complete system through Docker Compose.
+Configure Nginx only after the application works locally.
+
+Even though Docker can run everything without host-level Node and Python dependencies, installing Node and a Python virtual environment is useful for VS Code debugging, linting, testing, and troubleshooting.
+
+1. Inspect the repository first
+
+From the VS Code terminal:
+
+cd /path/to/your/repository
+
+pwd
+git status
+
+find . -maxdepth 3 -type f \
+  \( -name "Dockerfile*" \
+  -o -name "compose*.yml" \
+  -o -name "compose*.yaml" \
+  -o -name "docker-compose*.yml" \
+  -o -name "docker-compose*.yaml" \
+  -o -name "requirements*.txt" \
+  -o -name "pyproject.toml" \
+  -o -name "package.json" \
+  -o -name "package-lock.json" \
+  -o -name ".nvmrc" \
+  -o -name ".env.example" \
+  -o -name "alembic.ini" \) -print
+
+A typical structure might look like:
+
+repository/
+├── backend/
+│   ├── app/
+│   ├── requirements.txt
+│   ├── Dockerfile
+│   └── .env
+├── frontend/
+│   ├── src/
+│   ├── package.json
+│   ├── package-lock.json
+│   ├── Dockerfile
+│   └── .env.development.local
+├── compose.yaml
+└── .gitignore
+
+Your directory names may be different.
+
+Determine whether React uses Vite or Create React App
+
+Run:
+
+cd frontend
+grep -E '"vite"|"react-scripts"' package.json
+grep -A 10 '"scripts"' package.json
+
+Interpretation:
+
+"vite" means use variables beginning with VITE_
+"react-scripts" means use variables beginning with REACT_APP_
+
+Also check the Node version expected by the repository:
+
+cat .nvmrc 2>/dev/null || true
+grep -A 5 '"engines"' package.json || true
+grep -R "^FROM node:" -n .. --exclude-dir=node_modules
+
+Use the Node version already specified in .nvmrc, package.json, CI/CD, or Dockerfile. Do not automatically use the newest Node version because an older project may not be compatible.
+
+2. Install Docker first
+
+Amazon Linux 2023 uses dnf, and the Docker package is available through its package management system.
+
+sudo dnf update -y
+sudo dnf install -y docker
+
+sudo systemctl enable --now docker
+
+sudo systemctl status docker --no-pager
+docker --version
+
+Allow your EC2 user to run Docker without putting sudo before every command:
+
+sudo usermod -aG docker $USER
+
+Then completely disconnect and reconnect the VS Code Remote SSH session.
+
+After reconnecting:
+
+id
+docker ps
+
+You should see docker in the group list.
+
+Be aware that membership in the Docker group effectively provides root-level privileges on the machine.
+
+Check Docker Compose
+docker compose version
+
+When this works, use:
+
+docker compose
+
+Do not use the older:
+
+docker-compose
+
+If docker compose is missing, first try:
+
+sudo dnf install -y docker-compose-plugin
+docker compose version
+
+Docker recommends the Compose plugin rather than the legacy standalone docker-compose executable.
+
+3. Install NVM and Node.js
+
+You probably meant:
+
+NVM: Node Version Manager
+npm: Node Package Manager
+
+NVM manages Node versions. npm installs React dependencies.
+
+Install NVM:
+
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.6/install.sh | bash
+
+Reload your shell:
+
+source ~/.bashrc
+
+Confirm:
+
+nvm --version
+
+The current official NVM installation instructions use version 0.40.6.
+
+Install the repository’s Node version
+
+Go to the frontend directory:
+
+cd /path/to/repository/frontend
+
+When .nvmrc exists:
+
+nvm install
+nvm use
+
+When the repository specifies Node 22, for example:
+
+nvm install 22
+nvm use 22
+nvm alias default 22
+
+Verify:
+
+node --version
+npm --version
+Install frontend dependencies
+
+When package-lock.json exists, use:
+
+npm ci
+
+npm ci installs the dependency tree represented by the committed lock file and fails instead of silently changing the lock file when package.json and package-lock.json disagree.
+
+Use npm install only when:
+
+there is no package-lock.json, or
+you intentionally need to add/update packages.
+
+Test the frontend build:
+
+npm run build
+
+List available commands:
+
+npm run
+
+Common commands are:
+
+npm run dev
+npm start
+npm run build
+npm test
+npm run lint
+
+The actual commands are controlled by the scripts section in package.json.
+
+4. Create the Python environment
+
+Go to the backend folder:
+
+cd /path/to/repository/backend
+
+Check the Python version:
+
+python3 --version
+which python3
+
+Create a virtual environment:
+
+python3 -m venv .venv
+
+Activate it:
+
+source .venv/bin/activate
+
+Your shell should show something similar to:
+
+(.venv) [ec2-user@host backend]$
+
+Confirm that the virtual environment’s Python and pip are being used:
+
+which python
+which pip
+python --version
+pip --version
+
+Upgrade the package-installation tooling:
+
+python -m pip install --upgrade pip setuptools wheel
+
+Install the requirements:
+
+python -m pip install -r requirements.txt
+
+Using pip install -r requirements.txt inside a virtual environment is the standard way to reproduce the Python dependency environment.
+
+Verify:
+
+python -m pip check
+python -m pip list
+If requirements.txt is not in the backend folder
+
+Find it:
+
+find .. -name "requirements*.txt" -print
+
+Then install the correct one:
+
+python -m pip install -r ../requirements.txt
+If psycopg or another package fails to compile
+
+You may see errors involving:
+
+gcc
+Python.h
+libpq
+pg_config
+PostgreSQL development headers
+
+First inspect which PostgreSQL development packages are available:
+
+sudo dnf search postgresql | grep -E "devel|client"
+
+Common build packages may include:
+
+sudo dnf install -y gcc python3-devel
+
+Install PostgreSQL development headers only when the error specifically requires them. Do not randomly install several PostgreSQL server versions.
+
+5. Build the .env files correctly
+
+This is the most important part.
+
+Do not begin by inventing variable names. First discover what the application expects.
+
+From the repository root:
+
+grep -R \
+  --exclude-dir=.git \
+  --exclude-dir=node_modules \
+  --exclude-dir=.venv \
+  -nE \
+  'os\.getenv|os\.environ|BaseSettings|SettingsConfigDict|DATABASE_URL|REDIS_URL|REDIS_HOST|import\.meta\.env|process\.env' .
+
+Also check for templates:
+
+find . -name ".env.example" -o -name ".env.template" -o -name "*.env.example"
+
+When an example exists:
+
+cp backend/.env.example backend/.env
+cp frontend/.env.example frontend/.env.development.local
+
+Then edit:
+
+nano backend/.env
+
+Save in nano with:
+
+Ctrl+O
+Enter
+Ctrl+X
+6. Recommended backend .env
+
+Use the exact names expected by your code. A representative structure is:
+
+APP_ENV=development
+APP_HOST=0.0.0.0
+APP_PORT=8000
+LOG_LEVEL=INFO
+
+DATABASE_HOST=your-aurora-endpoint.rds.amazonaws.com
+DATABASE_PORT=5432
+DATABASE_NAME=your_database
+DATABASE_USER=your_database_user
+DATABASE_PASSWORD=replace_with_actual_password
+DATABASE_SSLMODE=require
+
+REDIS_HOST=127.0.0.1
+REDIS_PORT=6379
+REDIS_DB=0
+
+SECRET_KEY=replace_with_a_long_random_value
+CORS_ORIGINS=http://localhost:5173,http://localhost:3000
+
+The application might instead expect URL-style variables:
+
+DATABASE_URL=postgresql+psycopg://username:password@your-aurora-endpoint.rds.amazonaws.com:5432/database_name?sslmode=require
+REDIS_URL=redis://127.0.0.1:6379/0
+
+Do not maintain both forms unless the application uses both.
+
+Generate a random secret
+python -c "import secrets; print(secrets.token_urlsafe(48))"
+
+Copy the output into SECRET_KEY.
+
+Protect the file
+chmod 600 backend/.env
+
+Verify .env is ignored by Git:
+
+grep -nE '(^|/)\.env|\.env\.\*' .gitignore
+
+When needed, add:
+
+cat >> .gitignore <<'EOF'
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+backend/.env
+frontend/.env.local
+frontend/.env.*.local
+EOF
+
+Check carefully:
+
+git status
+
+The real .env file must not appear as an untracked file that could be committed.
+
+7. Recommended React environment file
+When the app uses Vite
+
+Create:
+
+nano frontend/.env.development.local
+
+Example:
+
+VITE_API_BASE_URL=http://localhost:8000
+VITE_APP_NAME=iEOM
+VITE_ENVIRONMENT=development
+
+Vite only exposes variables prefixed with VITE_ to browser-side code. Those values are bundled into client code and therefore must never contain database passwords, AWS secrets, API secret keys, or Redis credentials.
+
+Vite loads .env, .env.local, .env.[mode], and .env.[mode].local, with mode-specific values taking priority. Restart the frontend process after changing the file.
+
+When the app uses Create React App
+
+Use:
+
+REACT_APP_API_BASE_URL=http://localhost:8000
+REACT_APP_NAME=iEOM
+Important frontend rule
+
+These are safe:
+
+VITE_API_BASE_URL=http://localhost:8000
+VITE_APP_NAME=iEOM
+
+These are not safe:
+
+VITE_DATABASE_PASSWORD=secret
+VITE_OPENAI_API_KEY=secret
+VITE_AWS_SECRET_ACCESS_KEY=secret
+
+A React application executes in the user’s browser. Anything available to React should be considered public.
+
+8. Understand localhost correctly
+
+This causes many Docker connectivity problems.
+
+Backend running directly on EC2
+
+Use:
+
+REDIS_HOST=127.0.0.1
+
+because both Redis and Python are running on the EC2 host.
+
+Backend running inside Docker, Redis running on EC2 host
+
+Inside a container:
+
+127.0.0.1
+
+refers to the container itself, not the EC2 host.
+
+Add this to the backend service in Compose:
+
+extra_hosts:
+  - "host.docker.internal:host-gateway"
+
+Then use:
+
+REDIS_HOST=host.docker.internal
+REDIS_PORT=6379
+Redis running as a Docker Compose service
+
+When the Compose service is named redis:
+
+services:
+  redis:
+    image: redis:7-alpine
+
+  backend:
+    environment:
+      REDIS_HOST: redis
+
+Then use:
+
+REDIS_HOST=redis
+
+The Compose service name becomes the internal DNS hostname.
+
+Aurora/PostgreSQL
+
+For Aurora, use the actual RDS endpoint:
+
+DATABASE_HOST=your-cluster.cluster-xxxxxxxx.us-east-1.rds.amazonaws.com
+
+Do not use localhost unless PostgreSQL Server is genuinely running on the same host or in the same container.
+
+Also remember: installing the PostgreSQL client only gives you commands such as psql. It does not install or start a PostgreSQL database server.
+
+9. Test Redis and PostgreSQL before starting the application
+Redis
+redis-cli -h 127.0.0.1 -p 6379 ping
+
+Expected:
+
+PONG
+
+Check service status:
+
+sudo systemctl status redis --no-pager
+
+Depending on the package, the service could be named redis6 or something similar:
+
+systemctl list-units --type=service | grep -i redis
+PostgreSQL/Aurora
+
+Avoid putting the password directly in shell history.
+
+read -s PGPASSWORD
+export PGPASSWORD
+
+Enter the password, then:
+
+psql \
+  -h your-aurora-endpoint.rds.amazonaws.com \
+  -p 5432 \
+  -U your_user \
+  -d your_database \
+  "sslmode=require"
+
+Or perform a one-command test:
+
+psql \
+  "host=your-aurora-endpoint.rds.amazonaws.com \
+  port=5432 \
+  dbname=your_database \
+  user=your_user \
+  sslmode=require" \
+  -c "select current_timestamp, current_database(), current_user;"
+
+Clear the password afterward:
+
+unset PGPASSWORD
+10. Run the backend natively first
+
+Activate the environment:
+
+cd /path/to/repository/backend
+source .venv/bin/activate
+
+Determine the FastAPI module:
+
+grep -R \
+  --exclude-dir=.venv \
+  --exclude-dir=__pycache__ \
+  -n "FastAPI(" .
+
+Common examples are:
+
+uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+
+or:
+
+uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+Test from another EC2 terminal:
+
+curl -i http://127.0.0.1:8000/health
+
+Possible alternatives:
+
+curl -i http://127.0.0.1:8000/
+curl -i http://127.0.0.1:8000/docs
+curl -i http://127.0.0.1:8000/openapi.json
+
+From your local VDI, use VS Code port forwarding:
+
+Forward remote port 8000
+Open http://localhost:8000/docs
+
+Do not open port 8000 publicly in the AWS security group merely for development.
+
+11. Run React natively
+
+Open a second VS Code terminal:
+
+cd /path/to/repository/frontend
+
+nvm use
+npm ci
+
+For Vite:
+
+npm run dev -- --host 0.0.0.0
+
+For Create React App:
+
+npm start
+
+Vite normally uses port 5173. Create React App commonly uses port 3000, although your project may specify something different.
+
+Check listening ports:
+
+sudo ss -lntp | grep -E ':3000|:5173|:8000'
+
+Forward the appropriate frontend port through VS Code and open:
+
+http://localhost:5173
+
+or:
+
+http://localhost:3000
+
+At this stage, confirm:
+
+React page loads.
+Browser calls the backend.
+Backend connects to Redis.
+Backend connects to Aurora/PostgreSQL.
+No CORS errors appear in the browser console.
+12. Run through Docker
+
+Once native execution works, test the existing Docker configuration.
+
+From the repository root:
+
+cd /path/to/repository
+
+Validate Compose:
+
+docker compose config
+
+This is an excellent command because it identifies:
+
+invalid YAML
+unresolved environment variables
+incorrect Compose structure
+missing interpolation values
+
+Docker Compose supports env_file for passing environment variables into containers, and Compose has defined precedence rules when the same variable appears in multiple locations.
+
+Build the images:
+
+docker compose build
+
+Start in the foreground for the first run:
+
+docker compose up
+
+This makes errors visible immediately.
+
+After the first successful run, stop with:
+
+Ctrl+C
+
+Then run in the background:
+
+docker compose up -d
+
+Check:
+
+docker compose ps
+docker ps
+
+View logs:
+
+docker compose logs --tail=200
+docker compose logs -f backend
+docker compose logs -f frontend
+
+Service names may differ. List them with:
+
+docker compose config --services
+
+Stop everything:
+
+docker compose down
+
+Rebuild after code or dependency changes:
+
+docker compose up -d --build
+
+Complete clean rebuild:
+
+docker compose down
+docker compose build --no-cache
+docker compose up -d
+
+Avoid --no-cache for ordinary code changes because it makes every build slower.
+
+13. Representative Compose structure
+
+Do not replace your existing file blindly, but conceptually it may look like this:
+
+services:
+  backend:
+    build:
+      context: ./backend
+    env_file:
+      - ./backend/.env
+    ports:
+      - "8000:8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+    ports:
+      - "5173:5173"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+When Redis is on the EC2 host, the backend environment would use:
+
+REDIS_HOST=host.docker.internal
+
+When Redis is another Compose service, use:
+
+REDIS_HOST=redis
+14. Check how requirements are installed inside Docker
+
+Open the backend Dockerfile:
+
+cat backend/Dockerfile
+
+It should normally contain something conceptually similar to:
+
+FROM python:3.12-slim
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+
+When the Dockerfile already contains:
+
+RUN pip install -r requirements.txt
+
+you do not need the host .venv for Docker execution. The host .venv is only for native debugging, testing, IDE imports, and convenience.
+
+Likewise, a frontend Dockerfile may contain:
+
+FROM node:22-alpine
+
+WORKDIR /app
+
+COPY package.json package-lock.json ./
+RUN npm ci
+
+COPY . .
+
+CMD ["npm", "run", "dev", "--", "--host", "0.0.0.0"]
+
+Docker Compose examples officially use the same pattern of installing Python dependencies during the image build.
+
+15. Run database migrations carefully
+
+Check whether Alembic exists:
+
+find . -name "alembic.ini" -o -path "*/alembic/versions"
+
+When the project uses Alembic and the database is backed up or otherwise safe to modify:
+
+cd backend
+source .venv/bin/activate
+alembic current
+alembic history
+alembic upgrade head
+
+For Docker:
+
+docker compose exec backend alembic current
+docker compose exec backend alembic upgrade head
+
+Do not run migration commands until:
+
+the environment points to the correct database,
+you know whether it is development, staging, or production,
+you have reviewed the pending migrations.
+
+A mistaken .env can apply schema changes to the wrong database.
+
+16. VS Code debugging setup
+Python/FastAPI
+
+Select the interpreter:
+
+Ctrl+Shift+P
+Python: Select Interpreter
+
+Choose:
+
+backend/.venv/bin/python
+
+A typical .vscode/launch.json entry is:
+
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "FastAPI Backend",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "uvicorn",
+      "args": [
+        "app.main:app",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8000",
+        "--reload"
+      ],
+      "cwd": "${workspaceFolder}/backend",
+      "envFile": "${workspaceFolder}/backend/.env",
+      "jinja": true
+    }
+  ]
+}
+
+Change app.main:app to your actual FastAPI module.
+
+React
+
+Usually run React from the terminal:
+
+cd frontend
+nvm use
+npm run dev -- --host 0.0.0.0
+
+Then debug in the browser using the React Developer Tools and browser developer console.
+
+17. Production deployment sequence
+
+Once development works:
+
+Build the React production bundle.
+Run backend through a production container.
+Serve React through Nginx.
+Proxy /api to the backend.
+Add TLS/HTTPS.
+Store secrets in AWS Secrets Manager or SSM Parameter Store instead of a long-lived plain-text .env.
+Enable service restart and log rotation.
+Add application health checks.
+
+Build React:
+
+cd frontend
+npm run build
+
+Vite typically creates:
+
+dist/
+
+Create React App typically creates:
+
+build/
+
+Do not use the Vite development server as the permanent production web server. Serve the compiled assets through Nginx or a production frontend container.
+
+18. Do not expose these ports publicly
+
+Redis:
+
+6379
+
+PostgreSQL:
+
+5432
+
+Backend development port:
+
+8000
+
+React development ports:
+
+3000
+5173
+
+For normal production access, expose only:
+
+80
+443
+
+Nginx should receive web traffic and proxy API requests internally.
+
+19. Your practical command sequence
+
+Here is the condensed runbook.
+
+# Repository
+cd /path/to/repository
+git status
+
+# Docker
+sudo dnf install -y docker
+sudo systemctl enable --now docker
+sudo usermod -aG docker $USER
+# Disconnect and reconnect VS Code here
+
+docker --version
+docker compose version
+
+# NVM
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.6/install.sh | bash
+source ~/.bashrc
+
+# Frontend
+cd frontend
+nvm install       # when .nvmrc exists
+nvm use
+npm ci
+npm run build
+
+# Backend
+cd ../backend
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip setuptools wheel
+python -m pip install -r requirements.txt
+python -m pip check
+
+# Environment
+cp .env.example .env 2>/dev/null || true
+nano .env
+chmod 600 .env
+
+# Infrastructure tests
+redis-cli -h 127.0.0.1 -p 6379 ping
+
+# Native backend test
+uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+# Native frontend in another terminal
+cd /path/to/repository/frontend
+nvm use
+npm run dev -- --host 0.0.0.0
+
+# Docker validation and startup
+cd /path/to/repository
+docker compose config
+docker compose build
+docker compose up
+
+The most important distinction is:
+
+Native debugging: install requirements.txt in .venv and run npm ci on EC2.
+Docker execution: dependencies should be installed by the Dockerfiles while building images.
+Container networking: never assume localhost inside Docker means your EC2 host.
+Frontend environment: never put secrets in VITE_* or REACT_APP_* variables.
