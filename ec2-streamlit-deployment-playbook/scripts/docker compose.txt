@@ -1,0 +1,49 @@
+Run this exact block:
+
+# Remove the invalid HTML file
+rm -f "$HOME/.docker/cli-plugins/docker-compose"
+
+# Set the plugin directory
+DOCKER_CONFIG="${DOCKER_CONFIG:-$HOME/.docker}"
+mkdir -p "$DOCKER_CONFIG/cli-plugins"
+
+# Download the actual executable
+curl -fL \
+  "https://github.com/docker/compose/releases/download/v5.3.1/docker-compose-linux-x86_64" \
+  -o "$DOCKER_CONFIG/cli-plugins/docker-compose"
+
+# Make it executable
+chmod +x "$DOCKER_CONFIG/cli-plugins/docker-compose"
+
+Now verify the file before running it:
+
+ls -lh "$DOCKER_CONFIG/cli-plugins/docker-compose"
+file "$DOCKER_CONFIG/cli-plugins/docker-compose"
+
+The file command should report something similar to:
+
+ELF 64-bit LSB executable, x86-64
+
+It should not say:
+
+HTML document
+
+Then test:
+
+docker compose version
+
+You can also test the binary directly:
+
+"$DOCKER_CONFIG/cli-plugins/docker-compose" version
+
+Expected output:
+
+Docker Compose version v5.3.1
+
+Do not use:
+
+docker-compose version
+
+That is the legacy standalone command. Your installation is intended to use:
+
+docker compose version
